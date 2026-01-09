@@ -1,4 +1,4 @@
-print("--- SISTEM BASLATILIYOR (V29 DUAL BOX) ---")
+print("--- SISTEM BASLATILIYOR (V1.8 STACK 54-56s) ---")
 print("1. Kutuphaneler yukleniyor...")
 
 import easyocr
@@ -36,29 +36,49 @@ C_STACK_BG = "#220022" # Koyu Magenta Arka Plan
 # --- TUS KODLARI ---
 VK_F10 = 0x79
 
-# --- KOORDİNAT SİSTEMİ (4K) ---
-COMMON_BOXES = {
-    "MY_HP":   {"top": 2065, "left": 1800, "width": 200, "height": 45},
-    "MY_MANA": {"top": 2115, "left": 1800, "width": 200, "height": 45},
-    "CD":      {"top": 1938, "left": 2080, "width": 70,  "height": 50},
-    "MANA":    {"top": 1990, "left": 2120, "width": 60,  "height": 35},
-    "TIMER":   {"top": 5,    "left": 1880, "width": 90,  "height": 45}
-}
+# --- KOORDİNAT SİSTEMİ (DİNAMİK ÖLÇEKLEME) ---
+REF_W = 3840
+REF_H = 2160
 
-TARGET_LAYOUTS = {
-    "Right": { 
-        "HP":   {"top": 2074, "left": 3270, "width": 140, "height": 35},
-        "MANA": {"top": 2107, "left": 3270, "width": 140, "height": 35},
-        "NAME": {"top": 1860, "left": 3490, "width": 150, "height": 45},
-        "TYPE": {"top": 1900, "left": 3490, "width": 200, "height": 45}
-    },
-    "Left": { 
-        "HP":   {"top": 2074, "left": 124, "width": 140, "height": 35},
-        "MANA": {"top": 2107, "left": 124, "width": 140, "height": 35},
-        "NAME": {"top": 1860, "left": 340, "width": 150, "height": 45},
-        "TYPE": {"top": 1900, "left": 340, "width": 150, "height": 40}
+def get_scaled_boxes():
+    user32_local = ctypes.windll.user32
+    screen_w = user32_local.GetSystemMetrics(0)
+    screen_h = user32_local.GetSystemMetrics(1)
+    
+    rx = screen_w / REF_W
+    ry = screen_h / REF_H
+
+    print(f"--- EKRAN ALGILANDI: {screen_w}x{screen_h} (Oran: x{rx:.2f}, y{ry:.2f}) ---")
+
+    def s(val, axis):
+        return int(val * rx) if axis == 'x' else int(val * ry)
+
+    common = {
+        "MY_HP":   {"top": s(2065,'y'), "left": s(1780,'x'), "width": s(280,'x'), "height": s(45,'y')},
+        "MY_MANA": {"top": s(2115,'y'), "left": s(1780,'x'), "width": s(280,'x'), "height": s(45,'y')},
+        "CD":      {"top": s(1938,'y'), "left": s(2080,'x'), "width": s(70,'x'),  "height": s(50,'y')},
+        "MANA":    {"top": s(1990,'y'), "left": s(2120,'x'), "width": s(60,'x'),  "height": s(35,'y')},
+        "TIMER":   {"top": s(5,'y'),    "left": s(1880,'x'), "width": s(90,'x'),  "height": s(45,'y')}
     }
-}
+
+    target = {
+        "Right": { 
+            "HP":   {"top": s(2074,'y'), "left": s(3250,'x'), "width": s(190,'x'), "height": s(35,'y')},
+            "MANA": {"top": s(2107,'y'), "left": s(3250,'x'), "width": s(190,'x'), "height": s(35,'y')},
+            "NAME": {"top": s(1860,'y'), "left": s(3490,'x'), "width": s(150,'x'), "height": s(45,'y')},
+            "TYPE": {"top": s(1900,'y'), "left": s(3490,'x'), "width": s(200,'x'), "height": s(45,'y')}
+        },
+        "Left": { 
+            "HP":   {"top": s(2074,'y'), "left": s(100,'x'),  "width": s(190,'x'), "height": s(35,'y')},
+            "MANA": {"top": s(2107,'y'), "left": s(100,'x'),  "width": s(190,'x'), "height": s(35,'y')},
+            "NAME": {"top": s(1860,'y'), "left": s(340,'x'),  "width": s(150,'x'), "height": s(45,'y')},
+            "TYPE": {"top": s(1900,'y'), "left": s(340,'x'),  "width": s(150,'x'), "height": s(40,'y')}
+        }
+    }
+    
+    return common, target
+
+COMMON_BOXES, TARGET_LAYOUTS = get_scaled_boxes()
 
 HERO_LIST = [
     "Andromeda", "Arachna", "Armadon", "Balphagore", "Behemoth", "Blacksmith", 
@@ -76,7 +96,7 @@ HERO_LIST = [
 
 stats = {
     "my_hp_cur": 0, "my_hp_max": 0, "my_mana": 0,
-    "target_hp": 0, "target_mana": 0,
+    "target_hp": -1, "target_mana": -1,
     "target_name": "No Target",
     "ulti_status": "READY",
     "advice": "IDLE",
@@ -88,7 +108,6 @@ stats = {
     "danger_mode": False,
     "game_time_str": "00:00",
     "mana_alert": False,
-    # AYRI MESAJLAR
     "rune_msg": "-",
     "stack_msg": "-"
 }
@@ -135,18 +154,28 @@ def smart_clean_number(text):
 def parse_hp_bar(text):
     if not text: return 0, 0, 0
     text = text.replace("O", "0").replace("o", "0").replace("l", "1").replace("S", "5")
-    text = text.replace(".", "").replace(",", "")
+    text = text.replace(".", "").replace(",", "") 
+    nums = re.findall(r'\d+', text)
     try:
-        if "/" in text:
-            parts = text.split("/")
-            curr = int(''.join(filter(str.isdigit, parts[0])))
-            maxx = int(''.join(filter(str.isdigit, parts[1])))
+        if len(nums) >= 2:
+            curr = int(nums[0])
+            maxx = int(nums[1])
             percent = (curr / maxx) * 100 if maxx > 0 else 0
             return curr, maxx, percent
-        else:
-            curr = int(''.join(filter(str.isdigit, text)))
-            return curr, 0, 100
-    except: return 0, 0, 0
+        elif len(nums) == 1:
+            raw_val = nums[0]
+            if len(raw_val) >= 7:
+                mid = len(raw_val) // 2
+                s1 = raw_val[:mid]
+                s2 = raw_val[mid:]
+                curr = int(s1)
+                maxx = int(s2)
+                percent = (curr / maxx) * 100 if maxx > 0 else 0
+                return curr, maxx, percent
+            else:
+                return int(raw_val), 0, 100
+    except: pass
+    return 0, 0, 0
 
 def parse_game_time(text):
     if not text: return 0, 0
@@ -194,14 +223,14 @@ def get_active_window_title():
         return buff.value
     except: return ""
 
-def check_target_validity(name_read, type_read, my_faction):
-    if not name_read or len(name_read) < 2: return False
-    is_hero = False
+def is_hero_name(name):
+    if not name or len(name) < 2: return False
     for hero in HERO_LIST:
-        if hero.lower() in name_read.lower():
-            is_hero = True
-            break
-    if not is_hero: return False
+        if hero.lower() in name.lower():
+            return True
+    return False
+
+def check_target_validity(name_read, type_read, my_faction):
     if my_faction == "Legion" and "legion" in type_read.lower(): return False
     if my_faction == "Hellbourne" and "hellbourne" in type_read.lower(): return False
     return True
@@ -223,46 +252,47 @@ def bot_loop():
                 stats["danger_mode"] = True if (0 < perc < 25) else False
                 stats["my_mana"] = smart_clean_number(read_area(sct, COMMON_BOXES["MY_MANA"], mode="mana"))
                 
-                # 2. TARGET
-                stats["target_hp"] = smart_clean_number(read_area(sct, target_layout["HP"]))
-                t_mana = smart_clean_number(read_area(sct, target_layout["MANA"], mode="mana"))
-                stats["target_mana"] = t_mana
-                
-                stats["mana_alert"] = True if (0 < t_mana < 80) else False
-
+                # 2. TARGET (Hero Kontrolu)
                 raw_name = read_area(sct, target_layout["NAME"], mode="name")
-                raw_type = read_area(sct, target_layout["TYPE"], mode="text")
-                
-                if len(raw_name) < 2: 
-                    stats["target_name"] = "NO TARGET"
-                    valid_enemy = False
-                    stats["mana_alert"] = False
-                else:
+                if is_hero_name(raw_name):
                     stats["target_name"] = raw_name
+                    stats["target_hp"] = smart_clean_number(read_area(sct, target_layout["HP"]))
+                    t_mana = smart_clean_number(read_area(sct, target_layout["MANA"], mode="mana"))
+                    stats["target_mana"] = t_mana
+                    stats["mana_alert"] = True if (0 < t_mana < 80) else False
+                    raw_type = read_area(sct, target_layout["TYPE"], mode="text")
                     valid_enemy = check_target_validity(raw_name, raw_type, stats["my_faction"])
+                else:
+                    stats["target_name"] = raw_name if len(raw_name)>1 else "NO TARGET"
+                    stats["target_hp"] = -1
+                    stats["target_mana"] = -1
+                    stats["mana_alert"] = False
+                    valid_enemy = False
 
-                # 3. TIMER & DUAL MACRO CALCULATION
+                # 3. TIMER
                 time_text = read_area(sct, COMMON_BOXES["TIMER"], mode="timer")
                 mins, secs = parse_game_time(time_text)
                 stats["game_time_str"] = f"{mins:02d}:{secs:02d}"
                 
                 total_secs = mins * 60 + secs
                 
-                # RUNE HESABI (Bagimsiz)
+                # RUNE HESABI
                 stats["rune_msg"] = "-"
                 if total_secs > 0:
                     mod_rune = total_secs % 120
-                    if mod_rune >= 110: # Son 10 sn
+                    if mod_rune >= 110: 
                         stats["rune_msg"] = f"{120 - mod_rune}"
-                    elif mod_rune < 5: # Ilk 5 sn
+                    elif mod_rune < 5: 
                         stats["rune_msg"] = "SPAWN"
 
-                # STACK HESABI (Bagimsiz)
+                # STACK HESABI (54-56sn PULL)
                 stats["stack_msg"] = "-"
                 if total_secs > 0:
-                    if 43 <= secs < 53:
-                        stats["stack_msg"] = f"{53 - secs}"
-                    elif 53 <= secs <= 55:
+                    # 45. saniyeden 54'e kadar geri say
+                    if 45 <= secs < 54:
+                        stats["stack_msg"] = f"{54 - secs}"
+                    # 54, 55, 56 aninda PULL yaz
+                    elif 54 <= secs <= 56:
                         stats["stack_msg"] = "PULL"
 
                 # 4. ULTI
@@ -317,7 +347,7 @@ class ModernButton(tk.Frame):
         self.color = color
         self.text = text
         self.pack_propagate(False)
-        self.lbl = tk.Label(self, text=text, bg=C_PANEL, fg=color, font=("Segoe UI", 12, "bold"))
+        self.lbl = tk.Label(self, text=text, bg=C_PANEL, fg=color, font=("Segoe UI", 10, "bold"))
         self.lbl.pack(fill="both", expand=True, padx=2, pady=2)
         self.lbl.bind("<Enter>", self.on_enter)
         self.lbl.bind("<Leave>", self.on_leave)
@@ -340,6 +370,7 @@ class OverlayApp:
         w, h = 800, 600 
         x = (screen_w - w) // 2
         y = (screen_h - h) // 2
+        
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         self.root.bind("<Button-1>", self.start_move)
@@ -370,48 +401,45 @@ class OverlayApp:
 
     def show_setup_screen(self):
         for w in self.root.winfo_children(): w.destroy()
-        tk.Label(self.root, text="HoN TACTICAL AI", font=("Impact", 32), bg=C_BG, fg=C_ACCENT).pack(pady=(20,5))
-        tk.Label(self.root, text="SYSTEM CONFIGURATION", font=("Segoe UI", 10, "bold"), bg=C_BG, fg="#777").pack(pady=(0,20))
+        tk.Label(self.root, text="HoN TACTICAL AI", font=("Impact", 24), bg=C_BG, fg=C_ACCENT).pack(pady=(20,5))
+        tk.Label(self.root, text="SYSTEM CONFIGURATION", font=("Segoe UI", 8, "bold"), bg=C_BG, fg="#777").pack(pady=(0,20))
 
         container = tk.Frame(self.root, bg=C_BG)
         container.pack(expand=True, fill="both", padx=30)
 
-        # LEFT COL: FACTION
         f_left = tk.Frame(container, bg=C_BG)
         f_left.pack(side="left", fill="both", expand=True, padx=5)
-        tk.Label(f_left, text="FACTION", font=("Segoe UI", 12), bg=C_BG, fg="white").pack(pady=5)
+        tk.Label(f_left, text="FACTION", font=("Segoe UI", 10), bg=C_BG, fg="white").pack(pady=5)
         self.btn_legion = ModernButton(f_left, "LEGION", C_GREEN, lambda: self.select_faction("Legion"))
         self.btn_legion.pack(pady=5)
         self.btn_hell = ModernButton(f_left, "HELLBOURNE", C_RED, lambda: self.select_faction("Hellbourne"))
         self.btn_hell.pack(pady=5)
 
-        # CENTER COL: HERO
         f_center = tk.Frame(container, bg=C_BG)
         f_center.pack(side="left", fill="both", expand=True, padx=5)
-        tk.Label(f_center, text="HERO MODE", font=("Segoe UI", 12), bg=C_BG, fg="white").pack(pady=5)
+        tk.Label(f_center, text="HERO MODE", font=("Segoe UI", 10), bg=C_BG, fg="white").pack(pady=5)
         self.btn_legio_hero = ModernButton(f_center, "LEGIONNAIRE", C_GOLD, lambda: self.select_hero("Legionnaire"))
         self.btn_legio_hero.pack(pady=5)
         self.btn_other_hero = ModernButton(f_center, "OTHER HERO", "gray", lambda: self.select_hero("Other"))
         self.btn_other_hero.pack(pady=5)
 
-        # SAG: UI
         f_right = tk.Frame(container, bg=C_BG)
         f_right.pack(side="left", fill="both", expand=True, padx=5)
-        tk.Label(f_right, text="TARGET PANEL", font=("Segoe UI", 12), bg=C_BG, fg="white").pack(pady=5)
+        tk.Label(f_right, text="TARGET PANEL", font=("Segoe UI", 10), bg=C_BG, fg="white").pack(pady=5)
         self.btn_ui_right = ModernButton(f_right, "RIGHT (STD)", C_BLUE, lambda: self.select_ui("Right"))
         self.btn_ui_right.pack(pady=5)
         self.btn_ui_left = ModernButton(f_right, "LEFT (SWAP)", "gray", lambda: self.select_ui("Left"))
         self.btn_ui_left.pack(pady=5)
 
-        self.lbl_status = tk.Label(self.root, text="STATUS: AWAITING INPUT", font=("Consolas", 11), bg=C_BG, fg="#555")
+        self.lbl_status = tk.Label(self.root, text="STATUS: AWAITING INPUT", font=("Consolas", 9), bg=C_BG, fg="#555")
         self.lbl_status.pack(pady=(10, 5))
 
-        self.btn_launch = tk.Button(self.root, text="INITIALIZE SYSTEM", font=("Segoe UI", 14, "bold"), 
+        self.btn_launch = tk.Button(self.root, text="INITIALIZE SYSTEM", font=("Segoe UI", 12, "bold"), 
                                     bg="#222", fg="gray", state="disabled", command=self.launch_overlay,
                                     bd=0, padx=30, pady=10)
         self.btn_launch.pack(pady=10)
         
-        exit_btn = tk.Button(self.root, text="SHUTDOWN SYSTEM", font=("Segoe UI", 10, "bold"),
+        exit_btn = tk.Button(self.root, text="SHUTDOWN SYSTEM", font=("Segoe UI", 8, "bold"),
                              bg="#200000", fg="#ff5555", activebackground="#ff0000", activeforeground="white",
                              bd=0, cursor="hand2", command=self.root.destroy)
         exit_btn.pack(side="bottom", fill="x", ipady=8)
@@ -440,7 +468,7 @@ class OverlayApp:
         self.btn_launch.config(state="normal", bg=C_ACCENT, fg="black")
 
     def launch_overlay(self):
-        self.root.geometry("600x420+100+100")
+        self.root.geometry("600x500+100+100")
         self.show_hud_screen()
 
     def show_hud_screen(self):
@@ -448,17 +476,17 @@ class OverlayApp:
         self.root.attributes("-alpha", 0.90)
         
         self.header = tk.Frame(self.root, bg="#1a1a1a")
-        self.header.pack(fill="x", ipady=5)
+        self.header.pack(fill="x", ipady=2)
         
         mode_color = C_GOLD if stats["my_hero"] == "Legionnaire" else "gray"
         self.lbl_title = tk.Label(self.header, text=f"{stats['my_faction'].upper()} | {stats['my_hero'].upper()}", 
-                 font=("Arial", 10, "bold"), fg=mode_color, bg="#1a1a1a")
+                 font=("Arial", 7, "bold"), fg=mode_color, bg="#1a1a1a")
         self.lbl_title.pack(side="left", padx=15)
 
-        tk.Button(self.header, text="✕", font=("Arial", 12), bg="#1a1a1a", fg="#ff5555", bd=0, 
+        tk.Button(self.header, text="✕", font=("Arial", 9), bg="#1a1a1a", fg="#ff5555", bd=0, 
                   activebackground="red", activeforeground="white", cursor="hand2", 
                   command=self.root.destroy).pack(side="right", padx=5)
-        self.btn_mode = tk.Button(self.header, text="—", font=("Arial", 12, "bold"), bg="#1a1a1a", fg="white", bd=0, 
+        self.btn_mode = tk.Button(self.header, text="—", font=("Arial", 9, "bold"), bg="#1a1a1a", fg="white", bd=0, 
                                   activebackground="#333", cursor="hand2", command=self.toggle_mode)
         self.btn_mode.pack(side="right", padx=5)
 
@@ -466,66 +494,69 @@ class OverlayApp:
         self.content_frame.pack(fill="both", expand=True)
 
         self.details_frame = tk.Frame(self.content_frame, bg=C_BG)
-        self.details_frame.pack(fill="both")
+        self.details_frame.pack(fill="both", pady=5)
 
         self.info_frame = tk.Frame(self.details_frame, bg=C_BG)
-        self.info_frame.pack(pady=5)
+        self.info_frame.pack(pady=2)
         
-        self.lbl_timer = tk.Label(self.info_frame, text="TIME: --:--", font=("Consolas", 12), fg="white", bg=C_BG)
+        self.lbl_timer = tk.Label(self.info_frame, text="TIME: --:--", font=("Consolas", 10), fg="white", bg=C_BG)
         self.lbl_timer.pack(side="left", padx=10)
         
-        self.lbl_kongor = tk.Label(self.info_frame, text="", font=("Consolas", 12), fg="#ffcc00", bg=C_BG)
+        self.lbl_kongor = tk.Label(self.info_frame, text="", font=("Consolas", 10), fg="#ffcc00", bg=C_BG)
         self.lbl_kongor.pack(side="right", padx=10)
 
-        self.lbl_my = tk.Label(self.details_frame, text="PLAYER: ---", font=("Consolas", 14), fg=C_ACCENT, bg=C_BG)
-        self.lbl_my.pack(pady=5)
-        self.lbl_ulti = tk.Label(self.details_frame, text="...", font=("Verdana", 12), fg="gray", bg=C_BG)
-        self.lbl_ulti.pack(pady=5)
+        self.lbl_my = tk.Label(self.details_frame, text="PLAYER: ---", font=("Consolas", 12), fg=C_ACCENT, bg=C_BG)
+        self.lbl_my.pack(pady=2)
+        self.lbl_ulti = tk.Label(self.details_frame, text="...", font=("Verdana", 10), fg="gray", bg=C_BG)
+        self.lbl_ulti.pack(pady=2)
         
-        # --- MACRO KUTULARI (YAN YANA) ---
+        # --- MACRO KUTULARI (KUCUK) ---
         self.macro_frame = tk.Frame(self.content_frame, bg=C_BG)
-        self.macro_frame.pack(fill="x", padx=20, pady=5)
+        self.macro_frame.pack(fill="x", padx=20, pady=2) 
         
-        # RUNE BOX
         self.rune_box = tk.Frame(self.macro_frame, bg=C_RUNE_BG, highlightbackground=C_RUNE, highlightthickness=2)
         self.rune_box.pack(side="left", fill="x", expand=True, padx=5)
-        tk.Label(self.rune_box, text="RUNE", font=("Arial", 8), fg=C_RUNE, bg=C_RUNE_BG).pack()
-        self.lbl_rune = tk.Label(self.rune_box, text="-", font=("Impact", 16), fg="white", bg=C_RUNE_BG)
-        self.lbl_rune.pack()
+        tk.Label(self.rune_box, text="RUNE", font=("Arial", 7, "bold"), fg=C_RUNE, bg=C_RUNE_BG).pack(pady=0)
+        self.lbl_rune = tk.Label(self.rune_box, text="-", font=("Impact", 20), width=6, fg="white", bg=C_RUNE_BG)
+        self.lbl_rune.pack(pady=0)
 
-        # STACK BOX
         self.stack_box = tk.Frame(self.macro_frame, bg=C_STACK_BG, highlightbackground=C_STACK, highlightthickness=2)
         self.stack_box.pack(side="right", fill="x", expand=True, padx=5)
-        tk.Label(self.stack_box, text="STACK", font=("Arial", 8), fg=C_STACK, bg=C_STACK_BG).pack()
-        self.lbl_stack = tk.Label(self.stack_box, text="-", font=("Impact", 16), fg="white", bg=C_STACK_BG)
-        self.lbl_stack.pack()
+        tk.Label(self.stack_box, text="STACK", font=("Arial", 7, "bold"), fg=C_STACK, bg=C_STACK_BG).pack(pady=0)
+        self.lbl_stack = tk.Label(self.stack_box, text="-", font=("Impact", 20), width=6, fg="white", bg=C_STACK_BG)
+        self.lbl_stack.pack(pady=0)
 
-        self.lbl_advice = tk.Label(self.content_frame, text="IDLE", font=("Arial", 42, "bold"), fg="gray", bg=C_BG)
-        self.lbl_advice.pack(pady=10)
+        self.lbl_advice = tk.Label(self.content_frame, text="IDLE", font=("Arial", 18, "bold"), fg="gray", bg=C_BG)
+        self.lbl_advice.pack(pady=15, expand=True)
 
-        self.lbl_tname = tk.Label(self.details_frame, text="...", font=("Verdana", 12), fg="white", bg=C_BG)
+        self.lbl_tname = tk.Label(self.details_frame, text="...", font=("Verdana", 10), fg="white", bg=C_BG)
         self.lbl_tname.pack()
-        self.lbl_target = tk.Label(self.details_frame, text="Target Info", font=("Consolas", 14), fg="orange", bg=C_BG)
-        self.lbl_target.pack(pady=(0, 20))
+        self.lbl_target = tk.Label(self.details_frame, text="Target Info", font=("Consolas", 12), fg="orange", bg=C_BG)
+        self.lbl_target.pack(pady=(0, 10))
 
         self.update_ui_loop()
 
     def toggle_mode(self):
         if self.is_compact:
             self.is_compact = False
-            self.root.geometry("600x420")
+            self.root.geometry("600x500")
             self.details_frame.pack(before=self.macro_frame, fill="both")
             self.btn_mode.config(text="—")
         else:
             self.is_compact = True
-            self.root.geometry("400x180")
+            self.root.geometry("400x200")
             self.details_frame.pack_forget()
             self.btn_mode.config(text="+")
 
     def update_ui_loop(self):
         try:
             self.lbl_my.config(text=f"HP: {stats['my_hp_cur']}/{stats['my_hp_max']} | MP: {stats['my_mana']}")
-            self.lbl_target.config(text=f"HP: {stats['target_hp']} | MP: {stats['target_mana']}")
+            
+            if stats["target_hp"] == -1:
+                self.lbl_target.config(text="")
+            else:
+                self.lbl_target.config(text=f"HP: {stats['target_hp']} | MP: {stats['target_mana']}")
+
             self.lbl_tname.config(text=f"{stats['target_name']}")
             self.lbl_ulti.config(text=stats["ulti_status"])
             self.lbl_timer.config(text=f"TIME: {stats['game_time_str']}")
@@ -541,7 +572,7 @@ class OverlayApp:
 
             if stats["mana_alert"] and not stats["danger_mode"] and "EXECUTE" not in stats["advice"]:
                  self.lbl_target.config(fg=C_MANA_LOW, text=f"HP: {stats['target_hp']} | NO MANA!")
-            else:
+            elif stats["target_hp"] != -1:
                  self.lbl_target.config(fg="orange")
 
             rem = stats["kongor_time"] - time.time()
@@ -551,7 +582,6 @@ class OverlayApp:
             else:
                 self.lbl_kongor.config(text="")
 
-            # --- DUAL BOX UPDATE ---
             self.lbl_rune.config(text=stats["rune_msg"])
             self.lbl_stack.config(text=stats["stack_msg"])
 
