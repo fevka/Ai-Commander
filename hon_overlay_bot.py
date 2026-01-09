@@ -1,4 +1,4 @@
-print("--- SISTEM BASLATILIYOR (V1.13 INSTANT KEY & HUMAN TYPING) ---")
+print("--- SISTEM BASLATILIYOR (V1.22 HYBRID TIMER & STABLE PULSE) ---")
 print("1. Kutuphaneler yukleniyor...")
 
 import easyocr
@@ -14,7 +14,8 @@ import re
 import os
 import ctypes
 import pyautogui
-import random  # Randomize hiz icin eklendi
+import random
+import math
 
 # --- AYARLAR & RENKLER ---
 C_BG = "#0b0c10"
@@ -29,18 +30,18 @@ C_ALERT = "#ff0000"
 C_MANA_LOW = "#00ff00"
 
 # MACRO RENKLER
-C_RUNE = "#00ffff" # Cyan (Artik baslik beyaz olacak)
-C_RUNE_BG = "#002222" # Koyu Cyan Arka Plan
-C_STACK = "#ff00ff" # Magenta (Artik baslik beyaz olacak)
-C_STACK_BG = "#220022" # Koyu Magenta Arka Plan
+C_RUNE = "#00ffff" 
+C_RUNE_BG = "#002222" 
+C_STACK = "#ff00ff" 
+C_STACK_BG = "#220022" 
 
 # --- TUS KODLARI ---
 VK_F11 = 0x7A 
 
-# --- GLOBAL TRIGGER (F11 icin) ---
+# --- GLOBAL TRIGGER ---
 kongor_trigger = False
 
-# --- KOORDİNAT SİSTEMİ (DİNAMİK ÖLÇEKLEME) ---
+# --- KOORDİNAT SİSTEMİ ---
 REF_W = 3840
 REF_H = 2160
 
@@ -113,7 +114,11 @@ stats = {
     "game_time_str": "00:00",
     "mana_alert": False,
     "rune_msg": "-",
-    "stack_msg": "-"
+    "stack_msg": "-",
+    
+    # HYBRID TIMER DEGISKENLERI
+    "internal_time_base": 0,  # Son okunan gecerli oyun saniyesi
+    "internal_time_sys": 0    # O saniyenin okundugu bilgisayar saati
 }
 
 engine = pyttsx3.init()
@@ -124,18 +129,13 @@ user32 = ctypes.windll.user32
 
 # --- FONKSIYONLAR ---
 def key_listener_loop():
-    """
-    Bu fonksiyon ayri bir thread'de calisir ve F11 tusunu dinler.
-    Boylece OCR islemi sirasinda bile tus basimi kacmaz.
-    """
     global kongor_trigger
     while True:
-        # F11 Tusu
         if user32.GetAsyncKeyState(VK_F11) & 0x8000:
             kongor_trigger = True
             winsound.Beep(1000, 100)
-            time.sleep(0.5) # Debounce (tekrar tekrar basmasin diye bekle)
-        time.sleep(0.01) # CPU'yu yormamak icin minik bekleme
+            time.sleep(0.5) 
+        time.sleep(0.01)
 
 def play_alert_sound():
     sound_file = "execute.wav"
@@ -146,31 +146,20 @@ def play_alert_sound():
         engine.runAndWait()
 
 def auto_type_kongor_time(timestamp):
-    # HUMAN TYPING FIX: Her harf arasi randomize bekleme
     try:
         t_str = time.strftime("%H:%M", time.localtime(timestamp))
         msg = f"Kongor Down! Respawn: {t_str}"
-        
-        # 1. Chat Ac
         pyautogui.keyDown('enter')
         time.sleep(random.uniform(0.10, 0.20)) 
         pyautogui.keyUp('enter')
-        
         time.sleep(0.3) 
-        
-        # 2. Yaz (Insan gibi harf harf)
         for char in msg:
             pyautogui.write(char)
-            # 0.02 ile 0.08 saniye arasi rastgele bekle
             time.sleep(random.uniform(0.02, 0.08))
-            
         time.sleep(0.3) 
-        
-        # 3. Gonder
         pyautogui.keyDown('enter')
         time.sleep(random.uniform(0.10, 0.20))
         pyautogui.keyUp('enter')
-        
     except: pass
 
 def smart_clean_number(text):
@@ -235,11 +224,14 @@ def read_area(sct, monitor, mode="text"):
         
         if mode == "timer":
              _, gray = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+        elif mode == "cd":
+            gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            gray = cv2.bitwise_not(gray)
+            _, gray = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)
 
         if mode == "name": gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        elif mode == "cd": _, gray = cv2.threshold(gray, 140, 255, cv2.THRESH_BINARY)
         elif mode == "mana": _, gray = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY_INV)
-        elif mode != "timer": _, gray = cv2.threshold(gray, 140, 255, cv2.THRESH_BINARY_INV)
+        elif mode != "timer" and mode != "cd": _, gray = cv2.threshold(gray, 140, 255, cv2.THRESH_BINARY_INV)
         
         result = reader.readtext(gray, detail=0)
         return " ".join(result) if result else ""
@@ -255,7 +247,8 @@ def get_active_window_title():
     except: return ""
 
 def is_hero_name(name):
-    if not name or len(name) < 2: return False
+    if not name or len(name) < 4: return False
+    if re.search(r'[\d+!*-]', name): return False
     for hero in HERO_LIST:
         if hero.lower() in name.lower():
             return True
@@ -284,50 +277,75 @@ def bot_loop():
                 stats["danger_mode"] = True if (0 < perc < 25) else False
                 stats["my_mana"] = smart_clean_number(read_area(sct, COMMON_BOXES["MY_MANA"], mode="mana"))
                 
-                # 2. TARGET (Hero Kontrolu)
+                # 2. TARGET
                 raw_name = read_area(sct, target_layout["NAME"], mode="name")
-                if is_hero_name(raw_name):
-                    stats["target_name"] = raw_name
-                    stats["target_hp"] = smart_clean_number(read_area(sct, target_layout["HP"]))
-                    t_mana = smart_clean_number(read_area(sct, target_layout["MANA"], mode="mana"))
-                    stats["target_mana"] = t_mana
-                    stats["mana_alert"] = True if (0 < t_mana < 80) else False
-                    raw_type = read_area(sct, target_layout["TYPE"], mode="text")
-                    valid_enemy = check_target_validity(raw_name, raw_type, stats["my_faction"])
+                potential_hero = is_hero_name(raw_name)
+                
+                if potential_hero:
+                    t_hp = smart_clean_number(read_area(sct, target_layout["HP"]))
+                    if t_hp > 0:
+                        stats["target_name"] = raw_name
+                        stats["target_hp"] = t_hp
+                        t_mana = smart_clean_number(read_area(sct, target_layout["MANA"], mode="mana"))
+                        stats["target_mana"] = t_mana
+                        stats["mana_alert"] = True if (0 < t_mana < 80) else False
+                        
+                        raw_type = read_area(sct, target_layout["TYPE"], mode="text")
+                        valid_enemy = check_target_validity(raw_name, raw_type, stats["my_faction"])
+                    else:
+                        stats["target_name"] = "NO TARGET"
+                        stats["target_hp"] = -1
+                        valid_enemy = False
                 else:
-                    stats["target_name"] = raw_name if len(raw_name)>1 else "NO TARGET"
+                    stats["target_name"] = "NO TARGET"
                     stats["target_hp"] = -1
                     stats["target_mana"] = -1
                     stats["mana_alert"] = False
                     valid_enemy = False
 
-                # 3. TIMER
+                # 3. TIMER (GELISMIS HIBRIT SISTEM)
                 time_text = read_area(sct, COMMON_BOXES["TIMER"], mode="timer")
                 mins, secs = parse_game_time(time_text)
-                stats["game_time_str"] = f"{mins:02d}:{secs:02d}"
                 
-                total_secs = mins * 60 + secs
+                # Eger OCR mantikli bir saat okuduysa (0:0 degilse) senkronize et
+                if mins > 0 or secs > 0:
+                    current_total_secs = mins * 60 + secs
+                    stats["internal_time_base"] = current_total_secs
+                    stats["internal_time_sys"] = time.time()
                 
-                # RUNE HESABI
+                # Her dongude tahmini zamani hesapla
+                # (OCR okuyamazsa bile burasi calisir ve saniye ilerler)
+                elapsed = time.time() - stats["internal_time_sys"]
+                predicted_seconds = int(stats["internal_time_base"] + elapsed)
+                
+                # Ekrana yazdirmak icin formatla (dakika:saniye)
+                p_min, p_sec = divmod(predicted_seconds, 60)
+                stats["game_time_str"] = f"{p_min:02d}:{p_sec:02d}"
+                
+                # RUNE HESABI (Tahmini sureye gore)
                 stats["rune_msg"] = "-"
-                if total_secs > 0:
-                    mod_rune = total_secs % 120
+                if predicted_seconds > 0:
+                    mod_rune = predicted_seconds % 120
                     if mod_rune >= 110: 
                         stats["rune_msg"] = f"{120 - mod_rune}"
                     elif mod_rune < 5: 
                         stats["rune_msg"] = "SPAWN"
 
-                # STACK HESABI (54-56sn PULL)
+                # STACK HESABI (Tahmini sureye gore)
+                # 54-56sn PULL
+                # Geri sayim: 45-54
+                current_secs_in_min = predicted_seconds % 60
                 stats["stack_msg"] = "-"
-                if total_secs > 0:
-                    if 45 <= secs < 54:
-                        stats["stack_msg"] = f"{54 - secs}"
-                    elif 54 <= secs <= 56:
-                        stats["stack_msg"] = "PULL"
+                
+                if 45 <= current_secs_in_min < 54:
+                    stats["stack_msg"] = f"{54 - current_secs_in_min}"
+                elif 54 <= current_secs_in_min <= 56:
+                    stats["stack_msg"] = "PULL"
 
                 # 4. ULTI
                 cd_val = smart_clean_number(read_area(sct, COMMON_BOXES["CD"], mode="cd"))
-                if cd_val > 0 and cd_val < 200:
+                
+                if cd_val > 0 and cd_val < 300:
                     stats["ulti_status"] = f"CD ({cd_val}s)"
                     stats["advice"] = "WAIT"
                     stats["advice_color"] = "#555555"
@@ -359,9 +377,9 @@ def bot_loop():
                         stats["advice"] = "MONITORING"
                         stats["advice_color"] = "#444444"
                 
-                # 5. KONGOR (THREAD LISTENER KONTROL)
+                # 5. KONGOR
                 if kongor_trigger:
-                    kongor_trigger = False # Flag'i sifirla
+                    kongor_trigger = False
                     kt = time.time() + 600
                     stats["kongor_time"] = kt
                     Thread(target=auto_type_kongor_time, args=(kt,)).start()
@@ -401,11 +419,12 @@ class OverlayApp:
         x = (screen_w - w) // 2
         y = (screen_h - h) // 2
         
-        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self.root.geometry(f"800x600+{x}+{y}")
 
         self.root.bind("<Button-1>", self.start_move)
         self.root.bind("<B1-Motion>", self.do_move)
         
+        self.is_pinned = False
         self.is_compact = False
         self.show_setup_screen()
         self.check_focus_loop()
@@ -413,11 +432,14 @@ class OverlayApp:
 
     def check_focus_loop(self):
         try:
-            active_title = get_active_window_title()
-            if "Heroes of Newerth" in active_title or "HoN AI" in active_title:
+            if self.is_pinned:
                 self.root.deiconify()
             else:
-                self.root.withdraw()
+                active_title = get_active_window_title()
+                if "Heroes of Newerth" in active_title or "HoN AI" in active_title:
+                    self.root.deiconify()
+                else:
+                    self.root.withdraw()
         except: pass
         self.root.after(500, self.check_focus_loop)
 
@@ -498,7 +520,7 @@ class OverlayApp:
         self.btn_launch.config(state="normal", bg=C_ACCENT, fg="black")
 
     def launch_overlay(self):
-        self.root.geometry("600x500+100+100")
+        self.root.geometry("600x420+100+100")
         self.show_hud_screen()
 
     def show_hud_screen(self):
@@ -519,61 +541,73 @@ class OverlayApp:
         self.btn_mode = tk.Button(self.header, text="—", font=("Arial", 9, "bold"), bg="#1a1a1a", fg="white", bd=0, 
                                   activebackground="#333", cursor="hand2", command=self.toggle_mode)
         self.btn_mode.pack(side="right", padx=5)
+        
+        self.btn_pin = tk.Button(self.header, text="📌", font=("Arial", 9), bg="#1a1a1a", fg="white", bd=0,
+                                 activebackground="#333", cursor="hand2", command=self.toggle_pin)
+        self.btn_pin.pack(side="right", padx=5)
 
         self.content_frame = tk.Frame(self.root, bg=C_BG)
         self.content_frame.pack(fill="both", expand=True)
 
         self.details_frame = tk.Frame(self.content_frame, bg=C_BG)
-        self.details_frame.pack(fill="both", pady=5)
+        self.details_frame.pack(fill="both", pady=2)
 
         self.info_frame = tk.Frame(self.details_frame, bg=C_BG)
-        self.info_frame.pack(pady=2)
+        self.info_frame.pack(pady=0)
         
-        self.lbl_timer = tk.Label(self.info_frame, text="TIME: --:--", font=("Consolas", 10), fg="white", bg=C_BG)
+        self.lbl_timer = tk.Label(self.info_frame, text="TIME: --:--", font=("Consolas", 10, "bold"), fg="white", bg=C_BG)
         self.lbl_timer.pack(side="left", padx=10)
         
         self.lbl_kongor = tk.Label(self.info_frame, text="", font=("Consolas", 10, "bold"), fg="#ffcc00", bg=C_BG)
         self.lbl_kongor.pack(side="right", padx=10)
 
-        # FONT GUNCELLEMESI (STANDART: 10)
-        self.lbl_my = tk.Label(self.details_frame, text="PLAYER: ---", font=("Consolas", 10), fg=C_ACCENT, bg=C_BG)
-        self.lbl_my.pack(pady=2)
-        self.lbl_ulti = tk.Label(self.details_frame, text="...", font=("Verdana", 10), fg="gray", bg=C_BG)
-        self.lbl_ulti.pack(pady=2)
+        self.lbl_my = tk.Label(self.details_frame, text="PLAYER: ---", font=("Consolas", 10, "bold"), fg=C_ACCENT, bg=C_BG)
+        self.lbl_my.pack(pady=0)
+        self.lbl_ulti = tk.Label(self.details_frame, text="...", font=("Verdana", 10, "bold"), fg="gray", bg=C_BG)
+        self.lbl_ulti.pack(pady=0)
         
         self.macro_frame = tk.Frame(self.content_frame, bg=C_BG)
-        self.macro_frame.pack(fill="x", padx=20, pady=2) 
+        self.macro_frame.pack(fill="x", padx=20, pady=0) 
         
-        self.rune_box = tk.Frame(self.macro_frame, bg=C_RUNE_BG, highlightbackground=C_RUNE, highlightthickness=2)
+        # --- RUNE BOX (SABIT BOYUTLU KARE) ---
+        self.rune_box = tk.Frame(self.macro_frame, bg=C_RUNE_BG, highlightbackground=C_RUNE, highlightthickness=2, width=100, height=50)
+        self.rune_box.pack_propagate(False) # KAREYI SABITLE
         self.rune_box.pack(side="left", fill="x", expand=True, padx=5)
-        # BEYAZ RENK (V1.13)
-        tk.Label(self.rune_box, text="RUNE", font=("Arial", 8, "bold"), fg="white", bg=C_RUNE_BG).pack(pady=0)
-        self.lbl_rune = tk.Label(self.rune_box, text="-", font=("Impact", 20), width=6, fg="white", bg=C_RUNE_BG)
+        
+        tk.Label(self.rune_box, text="RUNE", font=("Arial", 7, "bold"), fg="white", bg=C_RUNE_BG).pack(pady=0)
+        self.lbl_rune = tk.Label(self.rune_box, text="-", font=("Impact", 18), width=6, fg="white", bg=C_RUNE_BG)
         self.lbl_rune.pack(pady=0)
 
-        self.stack_box = tk.Frame(self.macro_frame, bg=C_STACK_BG, highlightbackground=C_STACK, highlightthickness=2)
+        # --- STACK BOX (SABIT BOYUTLU KARE) ---
+        self.stack_box = tk.Frame(self.macro_frame, bg=C_STACK_BG, highlightbackground=C_STACK, highlightthickness=2, width=100, height=50)
+        self.stack_box.pack_propagate(False) # KAREYI SABITLE
         self.stack_box.pack(side="right", fill="x", expand=True, padx=5)
-        # BEYAZ RENK (V1.13)
-        tk.Label(self.stack_box, text="STACK", font=("Arial", 8, "bold"), fg="white", bg=C_STACK_BG).pack(pady=0)
-        self.lbl_stack = tk.Label(self.stack_box, text="-", font=("Impact", 20), width=6, fg="white", bg=C_STACK_BG)
+        
+        tk.Label(self.stack_box, text="STACK", font=("Arial", 7, "bold"), fg="white", bg=C_STACK_BG).pack(pady=0)
+        self.lbl_stack = tk.Label(self.stack_box, text="-", font=("Impact", 18), width=6, fg="white", bg=C_STACK_BG)
         self.lbl_stack.pack(pady=0)
 
-        # FONT: STANDART 10
-        self.lbl_advice = tk.Label(self.content_frame, text="IDLE", font=("Arial", 10), fg="gray", bg=C_BG)
-        self.lbl_advice.pack(pady=15, expand=True)
+        self.lbl_advice = tk.Label(self.content_frame, text="IDLE", font=("Arial", 10, "bold"), fg="gray", bg=C_BG)
+        self.lbl_advice.pack(pady=(10, 30), expand=True)
 
-        # FONT: STANDART 10
-        self.lbl_tname = tk.Label(self.details_frame, text="...", font=("Verdana", 10), fg="white", bg=C_BG)
+        self.lbl_tname = tk.Label(self.details_frame, text="...", font=("Verdana", 10, "bold"), fg="white", bg=C_BG)
         self.lbl_tname.pack()
-        self.lbl_target = tk.Label(self.details_frame, text="Target Info", font=("Consolas", 10), fg="orange", bg=C_BG)
+        self.lbl_target = tk.Label(self.details_frame, text="Target Info", font=("Consolas", 10, "bold"), fg="orange", bg=C_BG)
         self.lbl_target.pack(pady=(0, 10))
 
         self.update_ui_loop()
 
+    def toggle_pin(self):
+        self.is_pinned = not self.is_pinned
+        if self.is_pinned:
+            self.btn_pin.config(fg=C_MANA_LOW)
+        else:
+            self.btn_pin.config(fg="white")
+
     def toggle_mode(self):
         if self.is_compact:
             self.is_compact = False
-            self.root.geometry("600x500")
+            self.root.geometry("600x420")
             self.details_frame.pack(before=self.macro_frame, fill="both")
             self.btn_mode.config(text="—")
         else:
@@ -584,6 +618,14 @@ class OverlayApp:
 
     def update_ui_loop(self):
         try:
+            # ANIMASYON MANTIGI (PULSE)
+            pulse_val = abs(math.sin(time.time() * 8)) # Hiz 8
+            add_size = int(pulse_val * 6) # Max +6 pixel
+            
+            # Dinamik fontlar
+            font_pulse = ("Impact", 18 + add_size)
+            font_static = ("Impact", 18)
+
             self.lbl_my.config(text=f"HP: {stats['my_hp_cur']}/{stats['my_hp_max']} | MP: {stats['my_mana']}")
             
             if stats["target_hp"] == -1:
@@ -592,21 +634,25 @@ class OverlayApp:
                 self.lbl_target.config(text=f"HP: {stats['target_hp']} | MP: {stats['target_mana']}")
 
             self.lbl_tname.config(text=f"{stats['target_name']}")
-            self.lbl_ulti.config(text=stats["ulti_status"])
+            
+            if "CD" in stats["ulti_status"]:
+                self.lbl_ulti.config(text=stats["ulti_status"], fg=C_RED)
+            else:
+                self.lbl_ulti.config(text=stats["ulti_status"], fg="white")
+
             self.lbl_timer.config(text=f"TIME: {stats['game_time_str']}")
             
-            # DINAMIK FONT MANTIGI
             if stats["danger_mode"]:
                 self.blink_state = not self.blink_state
                 bg = C_ALERT if self.blink_state else C_BG
                 self.content_frame.config(bg=bg)
-                self.lbl_advice.config(text="LOW HP! RUN!", fg="white", bg=bg, font=("Arial", 12, "bold")) # +2 Punto & Bold
+                self.lbl_advice.config(text="LOW HP! RUN!", fg="white", bg=bg, font=("Arial", 14, "bold"))
             elif "EXECUTE" in stats["advice"]:
                 self.content_frame.config(bg=C_BG)
-                self.lbl_advice.config(text=stats["advice"], fg=stats["advice_color"], bg=C_BG, font=("Arial", 12, "bold")) # +2 Punto & Bold
+                self.lbl_advice.config(text=stats["advice"], fg=stats["advice_color"], bg=C_BG, font=("Arial", 14, "bold"))
             else:
                 self.content_frame.config(bg=C_BG)
-                self.lbl_advice.config(text=stats["advice"], fg=stats["advice_color"], bg=C_BG, font=("Arial", 10)) # Standart
+                self.lbl_advice.config(text=stats["advice"], fg=stats["advice_color"], bg=C_BG, font=("Arial", 10, "bold"))
 
             if stats["mana_alert"] and not stats["danger_mode"] and "EXECUTE" not in stats["advice"]:
                  self.lbl_target.config(fg=C_MANA_LOW, text=f"HP: {stats['target_hp']} | NO MANA!")
@@ -625,14 +671,26 @@ class OverlayApp:
             else:
                 self.lbl_kongor.config(text="")
 
-            self.lbl_rune.config(text=stats["rune_msg"])
-            self.lbl_stack.config(text=stats["stack_msg"])
+            # --- RUNE ANIMATION ---
+            r_txt = stats["rune_msg"]
+            if r_txt == "SPAWN" or (str(r_txt).isdigit() and int(r_txt) <= 5):
+                fg_col = C_RUNE if pulse_val > 0.5 else "white"
+                self.lbl_rune.config(text=r_txt, font=font_pulse, fg=fg_col)
+            else:
+                self.lbl_rune.config(text=r_txt, font=font_static, fg="white")
+
+            # --- STACK ANIMATION ---
+            s_txt = stats["stack_msg"]
+            if s_txt == "PULL" or (str(s_txt).isdigit() and int(s_txt) <= 5):
+                fg_col = C_STACK if pulse_val > 0.5 else "white"
+                self.lbl_stack.config(text=s_txt, font=font_pulse, fg=fg_col)
+            else:
+                self.lbl_stack.config(text=s_txt, font=font_static, fg="white")
 
             self.root.after(100, self.update_ui_loop)
         except: pass
 
 if __name__ == "__main__":
-    # TUS DINLEYICI THREAD BASLAT
     t_key = Thread(target=key_listener_loop)
     t_key.daemon = True
     t_key.start()
