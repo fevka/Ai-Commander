@@ -1,4 +1,4 @@
-print("--- SISTEM BASLATILIYOR (V1.8 STACK 54-56s) ---")
+print("--- SISTEM BASLATILIYOR (V1.13 INSTANT KEY & HUMAN TYPING) ---")
 print("1. Kutuphaneler yukleniyor...")
 
 import easyocr
@@ -14,6 +14,7 @@ import re
 import os
 import ctypes
 import pyautogui
+import random  # Randomize hiz icin eklendi
 
 # --- AYARLAR & RENKLER ---
 C_BG = "#0b0c10"
@@ -28,13 +29,16 @@ C_ALERT = "#ff0000"
 C_MANA_LOW = "#00ff00"
 
 # MACRO RENKLER
-C_RUNE = "#00ffff" # Cyan
+C_RUNE = "#00ffff" # Cyan (Artik baslik beyaz olacak)
 C_RUNE_BG = "#002222" # Koyu Cyan Arka Plan
-C_STACK = "#ff00ff" # Magenta
+C_STACK = "#ff00ff" # Magenta (Artik baslik beyaz olacak)
 C_STACK_BG = "#220022" # Koyu Magenta Arka Plan
 
 # --- TUS KODLARI ---
-VK_F10 = 0x79
+VK_F11 = 0x7A 
+
+# --- GLOBAL TRIGGER (F11 icin) ---
+kongor_trigger = False
 
 # --- KOORDİNAT SİSTEMİ (DİNAMİK ÖLÇEKLEME) ---
 REF_W = 3840
@@ -119,9 +123,19 @@ reader = easyocr.Reader(['en'], gpu=False)
 user32 = ctypes.windll.user32
 
 # --- FONKSIYONLAR ---
-def check_key_press():
-    if user32.GetAsyncKeyState(VK_F10) & 0x8000: return True
-    return False
+def key_listener_loop():
+    """
+    Bu fonksiyon ayri bir thread'de calisir ve F11 tusunu dinler.
+    Boylece OCR islemi sirasinda bile tus basimi kacmaz.
+    """
+    global kongor_trigger
+    while True:
+        # F11 Tusu
+        if user32.GetAsyncKeyState(VK_F11) & 0x8000:
+            kongor_trigger = True
+            winsound.Beep(1000, 100)
+            time.sleep(0.5) # Debounce (tekrar tekrar basmasin diye bekle)
+        time.sleep(0.01) # CPU'yu yormamak icin minik bekleme
 
 def play_alert_sound():
     sound_file = "execute.wav"
@@ -132,14 +146,31 @@ def play_alert_sound():
         engine.runAndWait()
 
 def auto_type_kongor_time(timestamp):
+    # HUMAN TYPING FIX: Her harf arasi randomize bekleme
     try:
         t_str = time.strftime("%H:%M", time.localtime(timestamp))
-        time.sleep(0.1)
-        pyautogui.press('enter')
-        time.sleep(0.1)
-        pyautogui.write(f"/team Kongor Down! Respawn: {t_str}")
-        time.sleep(0.1)
-        pyautogui.press('enter')
+        msg = f"Kongor Down! Respawn: {t_str}"
+        
+        # 1. Chat Ac
+        pyautogui.keyDown('enter')
+        time.sleep(random.uniform(0.10, 0.20)) 
+        pyautogui.keyUp('enter')
+        
+        time.sleep(0.3) 
+        
+        # 2. Yaz (Insan gibi harf harf)
+        for char in msg:
+            pyautogui.write(char)
+            # 0.02 ile 0.08 saniye arasi rastgele bekle
+            time.sleep(random.uniform(0.02, 0.08))
+            
+        time.sleep(0.3) 
+        
+        # 3. Gonder
+        pyautogui.keyDown('enter')
+        time.sleep(random.uniform(0.10, 0.20))
+        pyautogui.keyUp('enter')
+        
     except: pass
 
 def smart_clean_number(text):
@@ -237,6 +268,7 @@ def check_target_validity(name_read, type_read, my_faction):
 
 # --- BOT DONGUSU ---
 def bot_loop():
+    global kongor_trigger
     print("-> Bot Motoru Aktif")
     with mss.mss() as sct:
         last_speak_time = 0
@@ -288,10 +320,8 @@ def bot_loop():
                 # STACK HESABI (54-56sn PULL)
                 stats["stack_msg"] = "-"
                 if total_secs > 0:
-                    # 45. saniyeden 54'e kadar geri say
                     if 45 <= secs < 54:
                         stats["stack_msg"] = f"{54 - secs}"
-                    # 54, 55, 56 aninda PULL yaz
                     elif 54 <= secs <= 56:
                         stats["stack_msg"] = "PULL"
 
@@ -329,11 +359,11 @@ def bot_loop():
                         stats["advice"] = "MONITORING"
                         stats["advice_color"] = "#444444"
                 
-                # 5. KONGOR
-                if check_key_press():
+                # 5. KONGOR (THREAD LISTENER KONTROL)
+                if kongor_trigger:
+                    kongor_trigger = False # Flag'i sifirla
                     kt = time.time() + 600
                     stats["kongor_time"] = kt
-                    winsound.Beep(1000, 100)
                     Thread(target=auto_type_kongor_time, args=(kt,)).start()
 
             except: pass
@@ -502,36 +532,40 @@ class OverlayApp:
         self.lbl_timer = tk.Label(self.info_frame, text="TIME: --:--", font=("Consolas", 10), fg="white", bg=C_BG)
         self.lbl_timer.pack(side="left", padx=10)
         
-        self.lbl_kongor = tk.Label(self.info_frame, text="", font=("Consolas", 10), fg="#ffcc00", bg=C_BG)
+        self.lbl_kongor = tk.Label(self.info_frame, text="", font=("Consolas", 10, "bold"), fg="#ffcc00", bg=C_BG)
         self.lbl_kongor.pack(side="right", padx=10)
 
-        self.lbl_my = tk.Label(self.details_frame, text="PLAYER: ---", font=("Consolas", 12), fg=C_ACCENT, bg=C_BG)
+        # FONT GUNCELLEMESI (STANDART: 10)
+        self.lbl_my = tk.Label(self.details_frame, text="PLAYER: ---", font=("Consolas", 10), fg=C_ACCENT, bg=C_BG)
         self.lbl_my.pack(pady=2)
         self.lbl_ulti = tk.Label(self.details_frame, text="...", font=("Verdana", 10), fg="gray", bg=C_BG)
         self.lbl_ulti.pack(pady=2)
         
-        # --- MACRO KUTULARI (KUCUK) ---
         self.macro_frame = tk.Frame(self.content_frame, bg=C_BG)
         self.macro_frame.pack(fill="x", padx=20, pady=2) 
         
         self.rune_box = tk.Frame(self.macro_frame, bg=C_RUNE_BG, highlightbackground=C_RUNE, highlightthickness=2)
         self.rune_box.pack(side="left", fill="x", expand=True, padx=5)
-        tk.Label(self.rune_box, text="RUNE", font=("Arial", 7, "bold"), fg=C_RUNE, bg=C_RUNE_BG).pack(pady=0)
+        # BEYAZ RENK (V1.13)
+        tk.Label(self.rune_box, text="RUNE", font=("Arial", 8, "bold"), fg="white", bg=C_RUNE_BG).pack(pady=0)
         self.lbl_rune = tk.Label(self.rune_box, text="-", font=("Impact", 20), width=6, fg="white", bg=C_RUNE_BG)
         self.lbl_rune.pack(pady=0)
 
         self.stack_box = tk.Frame(self.macro_frame, bg=C_STACK_BG, highlightbackground=C_STACK, highlightthickness=2)
         self.stack_box.pack(side="right", fill="x", expand=True, padx=5)
-        tk.Label(self.stack_box, text="STACK", font=("Arial", 7, "bold"), fg=C_STACK, bg=C_STACK_BG).pack(pady=0)
+        # BEYAZ RENK (V1.13)
+        tk.Label(self.stack_box, text="STACK", font=("Arial", 8, "bold"), fg="white", bg=C_STACK_BG).pack(pady=0)
         self.lbl_stack = tk.Label(self.stack_box, text="-", font=("Impact", 20), width=6, fg="white", bg=C_STACK_BG)
         self.lbl_stack.pack(pady=0)
 
-        self.lbl_advice = tk.Label(self.content_frame, text="IDLE", font=("Arial", 18, "bold"), fg="gray", bg=C_BG)
+        # FONT: STANDART 10
+        self.lbl_advice = tk.Label(self.content_frame, text="IDLE", font=("Arial", 10), fg="gray", bg=C_BG)
         self.lbl_advice.pack(pady=15, expand=True)
 
+        # FONT: STANDART 10
         self.lbl_tname = tk.Label(self.details_frame, text="...", font=("Verdana", 10), fg="white", bg=C_BG)
         self.lbl_tname.pack()
-        self.lbl_target = tk.Label(self.details_frame, text="Target Info", font=("Consolas", 12), fg="orange", bg=C_BG)
+        self.lbl_target = tk.Label(self.details_frame, text="Target Info", font=("Consolas", 10), fg="orange", bg=C_BG)
         self.lbl_target.pack(pady=(0, 10))
 
         self.update_ui_loop()
@@ -561,24 +595,33 @@ class OverlayApp:
             self.lbl_ulti.config(text=stats["ulti_status"])
             self.lbl_timer.config(text=f"TIME: {stats['game_time_str']}")
             
+            # DINAMIK FONT MANTIGI
             if stats["danger_mode"]:
                 self.blink_state = not self.blink_state
                 bg = C_ALERT if self.blink_state else C_BG
                 self.content_frame.config(bg=bg)
-                self.lbl_advice.config(text="LOW HP! RUN!", fg="white", bg=bg)
+                self.lbl_advice.config(text="LOW HP! RUN!", fg="white", bg=bg, font=("Arial", 12, "bold")) # +2 Punto & Bold
+            elif "EXECUTE" in stats["advice"]:
+                self.content_frame.config(bg=C_BG)
+                self.lbl_advice.config(text=stats["advice"], fg=stats["advice_color"], bg=C_BG, font=("Arial", 12, "bold")) # +2 Punto & Bold
             else:
                 self.content_frame.config(bg=C_BG)
-                self.lbl_advice.config(text=stats["advice"], fg=stats["advice_color"], bg=C_BG)
+                self.lbl_advice.config(text=stats["advice"], fg=stats["advice_color"], bg=C_BG, font=("Arial", 10)) # Standart
 
             if stats["mana_alert"] and not stats["danger_mode"] and "EXECUTE" not in stats["advice"]:
                  self.lbl_target.config(fg=C_MANA_LOW, text=f"HP: {stats['target_hp']} | NO MANA!")
             elif stats["target_hp"] != -1:
                  self.lbl_target.config(fg="orange")
 
-            rem = stats["kongor_time"] - time.time()
-            if rem > 0:
-                m, s = divmod(int(rem), 60)
-                self.lbl_kongor.config(text=f"R:{m:02d}:{s:02d}")
+            if stats["kongor_time"] > 0:
+                rem = stats["kongor_time"] - time.time()
+                if rem > 0:
+                    m, s = divmod(int(rem), 60)
+                    self.lbl_kongor.config(text=f"R:{m:02d}:{s:02d}", fg="#ffcc00")
+                else:
+                    self.blink_state = not self.blink_state
+                    fg = "#00ff00" if self.blink_state else "white"
+                    self.lbl_kongor.config(text="KONGOR SPAWN!", fg=fg)
             else:
                 self.lbl_kongor.config(text="")
 
@@ -589,9 +632,14 @@ class OverlayApp:
         except: pass
 
 if __name__ == "__main__":
-    t = Thread(target=bot_loop)
-    t.daemon = True
-    t.start()
+    # TUS DINLEYICI THREAD BASLAT
+    t_key = Thread(target=key_listener_loop)
+    t_key.daemon = True
+    t_key.start()
+
+    t_bot = Thread(target=bot_loop)
+    t_bot.daemon = True
+    t_bot.start()
     
     root = tk.Tk()
     app = OverlayApp(root)
